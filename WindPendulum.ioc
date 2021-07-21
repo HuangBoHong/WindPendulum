@@ -2,7 +2,7 @@
 FREERTOS.FootprintOK=true
 FREERTOS.IPParameters=Tasks01,FootprintOK,Mutexes01,configENABLE_FPU
 FREERTOS.Mutexes01=sampleDataMutex,Dynamic,NULL;pidDataMutex,Dynamic,NULL
-FREERTOS.Tasks01=logicTask,24,128,StartLogicTask,Default,NULL,Dynamic,NULL,NULL;pidTask,24,256,StartPIDTask,Default,NULL,Dynamic,NULL,NULL;displayTask,8,128,StartDisplayTask,Default,NULL,Dynamic,NULL,NULL;sampleTask,8,128,StartSampleTask,Default,NULL,Dynamic,NULL,NULL
+FREERTOS.Tasks01=logicTask,24,128,StartLogicTask,Default,NULL,Dynamic,NULL,NULL;pidTask,24,256,StartPIDTask,Default,NULL,Dynamic,NULL,NULL;displayTask,8,512,StartDisplayTask,Default,NULL,Dynamic,NULL,NULL;sampleTask,8,128,StartSampleTask,Default,NULL,Dynamic,NULL,NULL
 FREERTOS.configENABLE_FPU=1
 File.Version=6
 GPIO.groupedBy=Group By Peripherals

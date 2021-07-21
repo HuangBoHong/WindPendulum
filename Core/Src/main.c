@@ -23,7 +23,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stm32f4xx_hal_u8g2.h"
+#include "mpu6050.h"
+#include "stdio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -68,7 +70,7 @@ const osThreadAttr_t pidTask_attributes = {
 osThreadId_t displayTaskHandle;
 const osThreadAttr_t displayTask_attributes = {
   .name = "displayTask",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for sampleTask */
@@ -89,7 +91,9 @@ const osMutexAttr_t pidDataMutex_attributes = {
   .name = "pidDataMutex"
 };
 /* USER CODE BEGIN PV */
-
+char sprintf_buffer[64];
+u8g2_t u8g2;
+MPU6050_t sample_last, sample_current;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -106,6 +110,16 @@ void StartDisplayTask(void *argument);
 void StartSampleTask(void *argument);
 
 /* USER CODE BEGIN PFP */
+void OLED_Display_Init(void) {
+  u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0, u8x8_byte_stm32_hw_i2c, u8x8_stm32_gpio_and_delay);
+  u8g2_InitDisplay(&u8g2);
+  u8g2_SetPowerSave(&u8g2, 0);
+  u8g2_SetFont(&u8g2, u8g2_font_courB10_tr);
+  u8g2_SetFontRefHeightExtendedText(&u8g2);
+  u8g2_SetDrawColor(&u8g2, 1);
+  u8g2_SetFontPosTop(&u8g2);
+  u8g2_SetFontDirection(&u8g2, 0);
+}
 
 /* USER CODE END PFP */
 
@@ -148,7 +162,8 @@ int main(void)
   MX_TIM5_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  OLED_Display_Init();
+  MPU6050_Init(&hi2c1);
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -191,6 +206,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
+
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -572,6 +588,15 @@ void StartDisplayTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
+    osMutexAcquire(sampleDataMutexHandle, 500);
+    u8g2_FirstPage(&u8g2);
+    do {
+      sprintf(sprintf_buffer, "KAX: %lf", sample_current.KalmanAngleX);
+      u8g2_DrawStr(&u8g2, 0, 0, sprintf_buffer);
+      sprintf(sprintf_buffer, "KAY: %lf", sample_current.KalmanAngleY);
+      u8g2_DrawStr(&u8g2, 0, 11, sprintf_buffer);
+    } while(u8g2_NextPage(&u8g2));
+    osMutexRelease(sampleDataMutexHandle);
     osDelay(1);
   }
   /* USER CODE END StartDisplayTask */
@@ -590,6 +615,9 @@ void StartSampleTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
+    osMutexAcquire(sampleDataMutexHandle, 500);
+    MPU6050_Read_All(&hi2c1, &sample_current);
+    osMutexRelease(sampleDataMutexHandle);
     osDelay(1);
   }
   /* USER CODE END StartSampleTask */
