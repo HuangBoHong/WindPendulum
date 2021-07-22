@@ -32,7 +32,8 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "cmsis_os.h"
+#include "queue.h"
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
@@ -61,7 +62,9 @@ void Error_Handler(void);
 
 /* Private defines -----------------------------------------------------------*/
 /* USER CODE BEGIN Private defines */
-
+#define UART1_RX_BUFFER_SIZE 64
+extern char uart1RxBuffer[UART1_RX_BUFFER_SIZE];
+extern osMessageQueueId_t uartRxQueueHandle;
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

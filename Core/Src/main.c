@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "stm32f4xx_hal_u8g2.h"
 #include "mpu6050.h"
+#include "PID.h"
 #include "stdio.h"
 /* USER CODE END Includes */
 
@@ -35,6 +36,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -51,6 +53,7 @@ TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim5;
 
 UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_usart1_rx;
 
 /* Definitions for logicTask */
 osThreadId_t logicTaskHandle;
@@ -78,27 +81,38 @@ osThreadId_t sampleTaskHandle;
 const osThreadAttr_t sampleTask_attributes = {
   .name = "sampleTask",
   .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for uartHandlerTask */
+osThreadId_t uartHandlerTaskHandle;
+const osThreadAttr_t uartHandlerTask_attributes = {
+  .name = "uartHandlerTask",
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
-/* Definitions for sampleDataMutex */
-osMutexId_t sampleDataMutexHandle;
-const osMutexAttr_t sampleDataMutex_attributes = {
-  .name = "sampleDataMutex"
-};
-/* Definitions for pidDataMutex */
-osMutexId_t pidDataMutexHandle;
-const osMutexAttr_t pidDataMutex_attributes = {
-  .name = "pidDataMutex"
+/* Definitions for uartRxQueue */
+osMessageQueueId_t uartRxQueueHandle;
+const osMessageQueueAttr_t uartRxQueue_attributes = {
+  .name = "uartRxQueue"
 };
 /* USER CODE BEGIN PV */
-char sprintf_buffer[64];
+char sprintfBuffer[64];
+char uart1RxBuffer[UART1_RX_BUFFER_SIZE];
 u8g2_t u8g2;
-MPU6050_t sample_last, sample_current;
+static MPU6050_t mpu6050;
+PIDController pidX = {
+    .T = 0.1f,
+    .Kp = 0.001f,
+    .Ki = 0.001f,
+    .Kd = 0.001f,
+}, pidY;
+float degreeX, degreeY = .0f;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM3_Init(void);
@@ -108,9 +122,11 @@ void StartLogicTask(void *argument);
 void StartPIDTask(void *argument);
 void StartDisplayTask(void *argument);
 void StartSampleTask(void *argument);
+void StartUartHandlerTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 void OLED_Display_Init(void) {
+
   u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0, u8x8_byte_stm32_hw_i2c, u8x8_stm32_gpio_and_delay);
   u8g2_InitDisplay(&u8g2);
   u8g2_SetPowerSave(&u8g2, 0);
@@ -120,12 +136,16 @@ void OLED_Display_Init(void) {
   u8g2_SetFontPosTop(&u8g2);
   u8g2_SetFontDirection(&u8g2, 0);
 }
-
+void SetPIDParameters(float t, float kp, float ki, float kd) {
+  pidX.T = pidY.T = t;
+  pidX.Kp = pidY.Kp = kp;
+  pidX.Ki = pidY.Ki = ki;
+  pidX.Kd = pidY.Kd = kd;
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
 /* USER CODE END 0 */
 
 /**
@@ -156,6 +176,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
   MX_TIM3_Init();
@@ -163,17 +184,20 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   OLED_Display_Init();
+
   MPU6050_Init(&hi2c1);
+
+  PIDController_Init(&pidX);
+  PIDController_Init(&pidY);
+  pidX.limMax = 1.0f;
+  pidX.limMin = -1.0f;
+  pidY = pidX;
+
+
   /* USER CODE END 2 */
 
   /* Init scheduler */
   osKernelInitialize();
-  /* Create the mutex(es) */
-  /* creation of sampleDataMutex */
-  sampleDataMutexHandle = osMutexNew(&sampleDataMutex_attributes);
-
-  /* creation of pidDataMutex */
-  pidDataMutexHandle = osMutexNew(&pidDataMutex_attributes);
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
@@ -186,6 +210,10 @@ int main(void)
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
+
+  /* Create the queue(s) */
+  /* creation of uartRxQueue */
+  uartRxQueueHandle = osMessageQueueNew (1, 64, &uartRxQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -203,6 +231,9 @@ int main(void)
 
   /* creation of sampleTask */
   sampleTaskHandle = osThreadNew(StartSampleTask, NULL, &sampleTask_attributes);
+
+  /* creation of uartHandlerTask */
+  uartHandlerTaskHandle = osThreadNew(StartUartHandlerTask, NULL, &uartHandlerTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -494,8 +525,25 @@ static void MX_USART1_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
-
+  __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE);
+  HAL_UART_Receive_DMA(&huart1, uart1RxBuffer, UART1_RX_BUFFER_SIZE);
   /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 
 }
 
@@ -567,10 +615,16 @@ void StartLogicTask(void *argument)
 void StartPIDTask(void *argument)
 {
   /* USER CODE BEGIN StartPIDTask */
+  static portTickType xLastWakeTime;
+  xLastWakeTime = xTaskGetTickCount();
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    portTickType xDelay = pdMS_TO_TICKS((int)(pidX.T * 1000.0f));
+    vTaskDelayUntil(&xLastWakeTime, xDelay);
+    PIDController_Update(&pidX, .0f, mpu6050.KalmanAngleX);
+    PIDController_Update(&pidY, .0f, mpu6050.KalmanAngleY);
+
   }
   /* USER CODE END StartPIDTask */
 }
@@ -588,15 +642,17 @@ void StartDisplayTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osMutexAcquire(sampleDataMutexHandle, 500);
     u8g2_FirstPage(&u8g2);
     do {
-      sprintf(sprintf_buffer, "KAX: %lf", sample_current.KalmanAngleX);
-      u8g2_DrawStr(&u8g2, 0, 0, sprintf_buffer);
-      sprintf(sprintf_buffer, "KAY: %lf", sample_current.KalmanAngleY);
-      u8g2_DrawStr(&u8g2, 0, 11, sprintf_buffer);
+      sprintf(sprintfBuffer, "KAX: %7.02lf", mpu6050.KalmanAngleX);
+      u8g2_DrawStr(&u8g2, 0, 0, sprintfBuffer);
+      sprintf(sprintfBuffer, "KAY: %7.02lf", mpu6050.KalmanAngleY);
+      u8g2_DrawStr(&u8g2, 0, 11, sprintfBuffer);
+      sprintf(sprintfBuffer, "PIDX: %6.01lf %%", pidX.out * 100.0f);
+      u8g2_DrawStr(&u8g2, 0, 22, sprintfBuffer);
+      sprintf(sprintfBuffer, "PIDY: %6.01lf %%", pidY.out * 100.0f);
+      u8g2_DrawStr(&u8g2, 0, 33, sprintfBuffer);
     } while(u8g2_NextPage(&u8g2));
-    osMutexRelease(sampleDataMutexHandle);
     osDelay(1);
   }
   /* USER CODE END StartDisplayTask */
@@ -612,15 +668,40 @@ void StartDisplayTask(void *argument)
 void StartSampleTask(void *argument)
 {
   /* USER CODE BEGIN StartSampleTask */
+  static portTickType xLastWakeTime;
+  xLastWakeTime = xTaskGetTickCount();
+  const portTickType xDelay = pdMS_TO_TICKS(1);
   /* Infinite loop */
   for(;;)
   {
-    osMutexAcquire(sampleDataMutexHandle, 500);
-    MPU6050_Read_All(&hi2c1, &sample_current);
-    osMutexRelease(sampleDataMutexHandle);
-    osDelay(1);
+    vTaskDelayUntil(&xLastWakeTime, xDelay);
+    MPU6050_Read_All(&hi2c1, &mpu6050);
   }
   /* USER CODE END StartSampleTask */
+}
+
+/* USER CODE BEGIN Header_StartUartHandlerTask */
+/**
+* @brief Function implementing the uartHandlerTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartUartHandlerTask */
+void StartUartHandlerTask(void *argument)
+{
+  /* USER CODE BEGIN StartUartHandlerTask */
+  char rxBuffer[UART1_RX_BUFFER_SIZE];
+  /* Infinite loop */
+  for(;;)
+  {
+    if(xQueueReceive(uartRxQueueHandle, rxBuffer, portMAX_DELAY)) {
+      float T, Kp, Ki, Kd;
+      sscanf(rxBuffer, "T: %f, Kp: %f, Ki: %f, Kd: %f", &T, &Kp, &Ki, &Kd);
+      SetPIDParameters(T, Kp, Ki, Kd);
+    }
+    osDelay(1);
+  }
+  /* USER CODE END StartUartHandlerTask */
 }
 
  /**

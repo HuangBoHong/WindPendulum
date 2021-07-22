@@ -1,0 +1,15 @@
+* 风力摆
+** 简介
+   使用运行FreeRTOS的STM32F401使用MPU6050采样经过卡尔曼滤波后得到X、Y轴的角度，通过PID控制器得到PWM的占空比输出控制电机。
+** 任务
+   使用FreeRTOS的Task对逻辑进行模块化封装，便于协作开发。
+*** ~logicTask~
+    负责异步设置PID的设定点，完成题目要求的任务。
+*** ~displayTask~
+    刷新OLED屏用于调参和状态显示。
+*** ~sampleTask~
+    负责从I2C总线获取MPU6050的采样值。
+*** ~pidTask~
+    负责从以指定的周期进行PID算法的更新。
+*** ~uartHandlerTask~
+    负责处理从串口接收的数据。
