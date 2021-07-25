@@ -59,7 +59,7 @@
 /* External variables --------------------------------------------------------*/
 extern DMA_HandleTypeDef hdma_usart1_rx;
 extern UART_HandleTypeDef huart1;
-extern TIM_HandleTypeDef htim1;
+extern TIM_HandleTypeDef htim11;
 
 /* USER CODE BEGIN EV */
 
@@ -178,17 +178,17 @@ void EXTI2_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles TIM1 update interrupt and TIM10 global interrupt.
+  * @brief This function handles TIM1 trigger and commutation interrupts and TIM11 global interrupt.
   */
-void TIM1_UP_TIM10_IRQHandler(void)
+void TIM1_TRG_COM_TIM11_IRQHandler(void)
 {
-  /* USER CODE BEGIN TIM1_UP_TIM10_IRQn 0 */
+  /* USER CODE BEGIN TIM1_TRG_COM_TIM11_IRQn 0 */
 
-  /* USER CODE END TIM1_UP_TIM10_IRQn 0 */
-  HAL_TIM_IRQHandler(&htim1);
-  /* USER CODE BEGIN TIM1_UP_TIM10_IRQn 1 */
+  /* USER CODE END TIM1_TRG_COM_TIM11_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim11);
+  /* USER CODE BEGIN TIM1_TRG_COM_TIM11_IRQn 1 */
 
-  /* USER CODE END TIM1_UP_TIM10_IRQn 1 */
+  /* USER CODE END TIM1_TRG_COM_TIM11_IRQn 1 */
 }
 
 /**
@@ -197,7 +197,7 @@ void TIM1_UP_TIM10_IRQHandler(void)
 void USART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART1_IRQn 0 */
-  if(USART6 == huart1.Instance) {
+  if(USART1 == huart1.Instance) {
     if(__HAL_UART_GET_FLAG(&huart1,UART_FLAG_IDLE) != RESET) {
       __HAL_UART_CLEAR_IDLEFLAG(&huart1);
 
@@ -206,7 +206,7 @@ void USART1_IRQHandler(void)
       uint8_t rx_len =  UART1_RX_BUFFER_SIZE - temp;
 
       HAL_UART_Receive_DMA(&huart1, uart1RxBuffer, UART1_RX_BUFFER_SIZE);
-      xQueueSendFromISR(uartRxQueueHandle, uart1RxBuffer, NULL);
+//      osMessageQueuePut(uartRxQueueHandle, uart1RxBuffer, 0, 0);
     }
 
   }

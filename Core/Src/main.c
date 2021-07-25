@@ -23,10 +23,14 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+
+#include "stdio.h"
+#include "math.h"
+
 #include "stm32f4xx_hal_u8g2.h"
 #include "mpu6050.h"
 #include "PID.h"
-#include "stdio.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,6 +50,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+I2C_HandleTypeDef hi2c2;
 
 SPI_HandleTypeDef hspi1;
 
@@ -80,8 +85,8 @@ const osThreadAttr_t displayTask_attributes = {
 osThreadId_t sampleTaskHandle;
 const osThreadAttr_t sampleTask_attributes = {
   .name = "sampleTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityRealtime7,
 };
 /* Definitions for uartHandlerTask */
 osThreadId_t uartHandlerTaskHandle;
@@ -102,8 +107,8 @@ u8g2_t u8g2;
 static MPU6050_t mpu6050;
 PIDController pidX = {
     .T = 0.1f,
-    .Kp = 0.001f,
-    .Ki = 0.001f,
+    .Kp = 0.01f,
+    .Ki = 0.01f,
     .Kd = 0.001f,
 }, pidY;
 float degreeX, degreeY = .0f;
@@ -118,6 +123,7 @@ static void MX_SPI1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM5_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_I2C2_Init(void);
 void StartLogicTask(void *argument);
 void StartPIDTask(void *argument);
 void StartDisplayTask(void *argument);
@@ -142,6 +148,9 @@ void SetPIDParameters(float t, float kp, float ki, float kd) {
   pidX.Ki = pidY.Ki = ki;
   pidX.Kd = pidY.Kd = kd;
 }
+
+
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -182,10 +191,11 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM5_Init();
   MX_USART1_UART_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
   OLED_Display_Init();
 
-  MPU6050_Init(&hi2c1);
+  while(MPU6050_Init(&hi2c1));
 
   PIDController_Init(&pidX);
   PIDController_Init(&pidY);
@@ -193,6 +203,10 @@ int main(void)
   pidX.limMin = -1.0f;
   pidY = pidX;
 
+  HAL_TIM_PWM_Start(&htim5, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim5, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim5, TIM_CHANNEL_3);
+  HAL_TIM_PWM_Start(&htim5, TIM_CHANNEL_4);
 
   /* USER CODE END 2 */
 
@@ -334,6 +348,40 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.ClockSpeed = 400000;
+  hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
 
 }
 
@@ -562,6 +610,9 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
+
   /*Configure GPIO pins : PC13 PC14 */
   GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
@@ -572,6 +623,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pin = GPIO_PIN_2;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB12 */
+  GPIO_InitStruct.Pin = GPIO_PIN_12;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
@@ -615,16 +673,16 @@ void StartLogicTask(void *argument)
 void StartPIDTask(void *argument)
 {
   /* USER CODE BEGIN StartPIDTask */
-  static portTickType xLastWakeTime;
-  xLastWakeTime = xTaskGetTickCount();
   /* Infinite loop */
   for(;;)
   {
-    portTickType xDelay = pdMS_TO_TICKS((int)(pidX.T * 1000.0f));
-    vTaskDelayUntil(&xLastWakeTime, xDelay);
+    osDelayUntil(osKernelGetTickCount() + pdMS_TO_TICKS((int)(pidX.T * 1000.0f)));
     PIDController_Update(&pidX, .0f, mpu6050.KalmanAngleX);
     PIDController_Update(&pidY, .0f, mpu6050.KalmanAngleY);
-
+    __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_1,(uint32_t)((double)UINT32_MAX * fmaxf(pidX.out, .0f)));
+    __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_2,(uint32_t)((double)UINT32_MAX * fmaxf(-pidX.out, .0f)));
+    __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_3,(uint32_t)((double)UINT32_MAX * fmaxf(pidY.out, .0f)));
+    __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_4,(uint32_t)((double)UINT32_MAX * fmaxf(-pidY.out, .0f)));
   }
   /* USER CODE END StartPIDTask */
 }
@@ -652,9 +710,11 @@ void StartDisplayTask(void *argument)
       u8g2_DrawStr(&u8g2, 0, 22, sprintfBuffer);
       sprintf(sprintfBuffer, "PIDY: %6.01lf %%", pidY.out * 100.0f);
       u8g2_DrawStr(&u8g2, 0, 33, sprintfBuffer);
+      u8g2_DrawStr(&u8g2, 0, 44, uart1RxBuffer);
     } while(u8g2_NextPage(&u8g2));
-    osDelay(1);
+    osDelay(pdMS_TO_TICKS(10));
   }
+
   /* USER CODE END StartDisplayTask */
 }
 
@@ -668,14 +728,13 @@ void StartDisplayTask(void *argument)
 void StartSampleTask(void *argument)
 {
   /* USER CODE BEGIN StartSampleTask */
-  static portTickType xLastWakeTime;
-  xLastWakeTime = xTaskGetTickCount();
-  const portTickType xDelay = pdMS_TO_TICKS(1);
   /* Infinite loop */
   for(;;)
   {
-    vTaskDelayUntil(&xLastWakeTime, xDelay);
     MPU6050_Read_All(&hi2c1, &mpu6050);
+    HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_12);
+    osDelay(pdMS_TO_TICKS(10));
+    osDelayUntil(osKernelGetTickCount() + pdMS_TO_TICKS(10));
   }
   /* USER CODE END StartSampleTask */
 }
@@ -694,19 +753,18 @@ void StartUartHandlerTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    if(xQueueReceive(uartRxQueueHandle, rxBuffer, portMAX_DELAY)) {
-      float T, Kp, Ki, Kd;
-      sscanf(rxBuffer, "T: %f, Kp: %f, Ki: %f, Kd: %f", &T, &Kp, &Ki, &Kd);
-      SetPIDParameters(T, Kp, Ki, Kd);
+    if(osMessageQueueGet(uartRxQueueHandle, rxBuffer, NULL, portMAX_DELAY)) {
+//      float T, Kp, Ki, Kd;
+//      sscanf(rxBuffer, "T: %f, Kp: %f, Ki: %f, Kd: %f", &T, &Kp, &Ki, &Kd);
+//      SetPIDParameters(T, Kp, Ki, Kd);
     }
-    osDelay(1);
   }
   /* USER CODE END StartUartHandlerTask */
 }
 
  /**
   * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM1 interrupt took place, inside
+  * @note   This function is called  when TIM11 interrupt took place, inside
   * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
   * a global variable "uwTick" used as application time base.
   * @param  htim : TIM handle
@@ -717,7 +775,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM1) {
+  if (htim->Instance == TIM11) {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
