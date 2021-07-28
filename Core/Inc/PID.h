@@ -5,8 +5,8 @@ typedef struct {
 
 	/* Controller gains */
 	float Kp;
-	float Ki;
-	float Kd;
+	float Ti;
+	float Td;
 
 	/* Derivative low-pass filter time constant */
 	float tau;

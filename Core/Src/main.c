@@ -23,7 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "memory.h"
 #include "stdio.h"
 #include "math.h"
 
@@ -36,10 +36,19 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+typedef enum {
+  Success, Failure
+} UARTControlResult;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define MPU6050 0
+#define GY955 1
+
+#define SAMPLE_PROVIDER GY955
 
 /* USER CODE END PD */
 
@@ -54,11 +63,12 @@ I2C_HandleTypeDef hi2c2;
 
 SPI_HandleTypeDef hspi1;
 
-TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim5;
 
 UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart6;
 DMA_HandleTypeDef hdma_usart1_rx;
+DMA_HandleTypeDef hdma_usart6_rx;
 
 /* Definitions for logicTask */
 osThreadId_t logicTaskHandle;
@@ -85,7 +95,7 @@ const osThreadAttr_t displayTask_attributes = {
 osThreadId_t sampleTaskHandle;
 const osThreadAttr_t sampleTask_attributes = {
   .name = "sampleTask",
-  .stack_size = 256 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityRealtime7,
 };
 /* Definitions for uartHandlerTask */
@@ -95,23 +105,43 @@ const osThreadAttr_t uartHandlerTask_attributes = {
   .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
-/* Definitions for uartRxQueue */
-osMessageQueueId_t uartRxQueueHandle;
-const osMessageQueueAttr_t uartRxQueue_attributes = {
-  .name = "uartRxQueue"
+/* Definitions for btUartRxQueue */
+osMessageQueueId_t btUartRxQueueHandle;
+const osMessageQueueAttr_t btUartRxQueue_attributes = {
+  .name = "btUartRxQueue"
+};
+/* Definitions for sensorUartRxQueue */
+osMessageQueueId_t sensorUartRxQueueHandle;
+const osMessageQueueAttr_t sensorUartRxQueue_attributes = {
+  .name = "sensorUartRxQueue"
+};
+/* Definitions for pidStatusMutex */
+osMutexId_t pidStatusMutexHandle;
+const osMutexAttr_t pidStatusMutex_attributes = {
+  .name = "pidStatusMutex"
 };
 /* USER CODE BEGIN PV */
 char sprintfBuffer[64];
 char uart1RxBuffer[UART1_RX_BUFFER_SIZE];
+char uart6RxBuffer[UART6_RX_BUFFER_SIZE];
+
 u8g2_t u8g2;
 static MPU6050_t mpu6050;
 PIDController pidX = {
     .T = 0.1f,
-    .Kp = 0.01f,
-    .Ki = 0.01f,
-    .Kd = 0.001f,
+    .Kp = 0.025f,
+    .Ti = 10.0f,
+    .Td = 1.0f,
+    .limMax = 1.0f,
+    .limMin = -1.0f,
+    .limMaxInt = 0.5f,
+    .limMinInt = -0.5f,
 }, pidY;
-float degreeX, degreeY = .0f;
+float rotX, rotY;
+float thetaX, thetaY;
+float targetThetaX = .0f, targetThetaY = .0f;
+
+UARTControlResult uartControlResult = Success;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -120,10 +150,10 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
-static void MX_TIM3_Init(void);
 static void MX_TIM5_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_I2C2_Init(void);
+static void MX_USART6_UART_Init(void);
 void StartLogicTask(void *argument);
 void StartPIDTask(void *argument);
 void StartDisplayTask(void *argument);
@@ -132,7 +162,6 @@ void StartUartHandlerTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 void OLED_Display_Init(void) {
-
   u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0, u8x8_byte_stm32_hw_i2c, u8x8_stm32_gpio_and_delay);
   u8g2_InitDisplay(&u8g2);
   u8g2_SetPowerSave(&u8g2, 0);
@@ -145,8 +174,8 @@ void OLED_Display_Init(void) {
 void SetPIDParameters(float t, float kp, float ki, float kd) {
   pidX.T = pidY.T = t;
   pidX.Kp = pidY.Kp = kp;
-  pidX.Ki = pidY.Ki = ki;
-  pidX.Kd = pidY.Kd = kd;
+  pidX.Ti = pidY.Ti = ki;
+  pidX.Td = pidY.Td = kd;
 }
 
 
@@ -188,19 +217,18 @@ int main(void)
   MX_DMA_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
-  MX_TIM3_Init();
   MX_TIM5_Init();
   MX_USART1_UART_Init();
   MX_I2C2_Init();
+  MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
   OLED_Display_Init();
 
-  while(MPU6050_Init(&hi2c1));
+//  while(MPU6050_Init(&hi2c1));
 
   PIDController_Init(&pidX);
   PIDController_Init(&pidY);
-  pidX.limMax = 1.0f;
-  pidX.limMin = -1.0f;
+
   pidY = pidX;
 
   HAL_TIM_PWM_Start(&htim5, TIM_CHANNEL_1);
@@ -212,6 +240,9 @@ int main(void)
 
   /* Init scheduler */
   osKernelInitialize();
+  /* Create the mutex(es) */
+  /* creation of pidStatusMutex */
+  pidStatusMutexHandle = osMutexNew(&pidStatusMutex_attributes);
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
@@ -226,8 +257,11 @@ int main(void)
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
-  /* creation of uartRxQueue */
-  uartRxQueueHandle = osMessageQueueNew (1, 64, &uartRxQueue_attributes);
+  /* creation of btUartRxQueue */
+  btUartRxQueueHandle = osMessageQueueNew (1, 64, &btUartRxQueue_attributes);
+
+  /* creation of sensorUartRxQueue */
+  sensorUartRxQueueHandle = osMessageQueueNew (1, 64, &sensorUartRxQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -333,7 +367,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.ClockSpeed = 10000;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -424,67 +458,6 @@ static void MX_SPI1_Init(void)
 }
 
 /**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM3_Init(void)
-{
-
-  /* USER CODE BEGIN TIM3_Init 0 */
-
-  /* USER CODE END TIM3_Init 0 */
-
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-
-  /* USER CODE BEGIN TIM3_Init 1 */
-
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM3_Init 2 */
-
-  /* USER CODE END TIM3_Init 2 */
-  HAL_TIM_MspPostInit(&htim3);
-
-}
-
-/**
   * @brief TIM5 Initialization Function
   * @param None
   * @retval None
@@ -496,6 +469,7 @@ static void MX_TIM5_Init(void)
 
   /* USER CODE END TIM5_Init 0 */
 
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
 
@@ -505,9 +479,18 @@ static void MX_TIM5_Init(void)
   htim5.Instance = TIM5;
   htim5.Init.Prescaler = 0;
   htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim5.Init.Period = 4294967295;
+  htim5.Init.Period = 65535;
   htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_PWM_Init(&htim5) != HAL_OK)
   {
     Error_Handler();
@@ -561,7 +544,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
+  huart1.Init.BaudRate = 9600;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -580,6 +563,39 @@ static void MX_USART1_UART_Init(void)
 }
 
 /**
+  * @brief USART6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART6_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART6_Init 0 */
+
+  /* USER CODE END USART6_Init 0 */
+
+  /* USER CODE BEGIN USART6_Init 1 */
+
+  /* USER CODE END USART6_Init 1 */
+  huart6.Instance = USART6;
+  huart6.Init.BaudRate = 9600;
+  huart6.Init.WordLength = UART_WORDLENGTH_8B;
+  huart6.Init.StopBits = UART_STOPBITS_1;
+  huart6.Init.Parity = UART_PARITY_NONE;
+  huart6.Init.Mode = UART_MODE_TX_RX;
+  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART6_Init 2 */
+
+  /* USER CODE END USART6_Init 2 */
+
+}
+
+/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
@@ -589,6 +605,9 @@ static void MX_DMA_Init(void)
   __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* DMA2_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
@@ -655,10 +674,19 @@ static void MX_GPIO_Init(void)
 void StartLogicTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
+  const float T = 1.0f, deltaT = 0.01f;
+  float tx, ty;
+  float vPeekX = 10.0f, vPeekY = 10.0f;
+  sin(M_PI * 2);
   for(;;)
   {
-    osDelay(1);
+    osDelayUntil(osKernelGetTickCount() + pdMS_TO_TICKS((uint32_t)(deltaT * 1000)));
+    tx += deltaT;
+    ty += deltaT;
+    if(tx > T) tx -= T;
+    if(ty > T) ty -= T;
+    targetThetaX = sinf(M_PI * 2.0f * tx / T) * vPeekX;
+    targetThetaY = sinf(M_PI * 2.0f * ty / T) * vPeekY;
   }
   /* USER CODE END 5 */
 }
@@ -677,12 +705,15 @@ void StartPIDTask(void *argument)
   for(;;)
   {
     osDelayUntil(osKernelGetTickCount() + pdMS_TO_TICKS((int)(pidX.T * 1000.0f)));
-    PIDController_Update(&pidX, .0f, mpu6050.KalmanAngleX);
-    PIDController_Update(&pidY, .0f, mpu6050.KalmanAngleY);
-    __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_1,(uint32_t)((double)UINT32_MAX * fmaxf(pidX.out, .0f)));
-    __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_2,(uint32_t)((double)UINT32_MAX * fmaxf(-pidX.out, .0f)));
-    __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_3,(uint32_t)((double)UINT32_MAX * fmaxf(pidY.out, .0f)));
-    __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_4,(uint32_t)((double)UINT32_MAX * fmaxf(-pidY.out, .0f)));
+    if(osMutexAcquire(pidStatusMutexHandle, 100) == osOK) {
+      PIDController_Update(&pidX, targetThetaX, thetaX);
+      PIDController_Update(&pidY, targetThetaY, thetaY);
+      __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_1, (uint16_t)((float)UINT16_MAX * fmaxf(pidX.out, .0f)));
+      __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_2, (uint16_t)((float)UINT16_MAX * fmaxf(-pidX.out, .0f)));
+      __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_3, (uint16_t)((float)UINT16_MAX * fmaxf(pidY.out, .0f)));
+      __HAL_TIM_SET_COMPARE(&htim5, TIM_CHANNEL_4, (uint16_t)((float)UINT16_MAX * fmaxf(-pidY.out, .0f)));
+      osMutexRelease(pidStatusMutexHandle);
+    }
   }
   /* USER CODE END StartPIDTask */
 }
@@ -702,15 +733,17 @@ void StartDisplayTask(void *argument)
   {
     u8g2_FirstPage(&u8g2);
     do {
-      sprintf(sprintfBuffer, "KAX: %7.02lf", mpu6050.KalmanAngleX);
+      sprintf(sprintfBuffer, "AX: %7.02lf", thetaX);
       u8g2_DrawStr(&u8g2, 0, 0, sprintfBuffer);
-      sprintf(sprintfBuffer, "KAY: %7.02lf", mpu6050.KalmanAngleY);
+      sprintf(sprintfBuffer, "AY: %7.02lf", thetaY);
       u8g2_DrawStr(&u8g2, 0, 11, sprintfBuffer);
       sprintf(sprintfBuffer, "PIDX: %6.01lf %%", pidX.out * 100.0f);
       u8g2_DrawStr(&u8g2, 0, 22, sprintfBuffer);
       sprintf(sprintfBuffer, "PIDY: %6.01lf %%", pidY.out * 100.0f);
       u8g2_DrawStr(&u8g2, 0, 33, sprintfBuffer);
-      u8g2_DrawStr(&u8g2, 0, 44, uart1RxBuffer);
+      u8g2_DrawStr(&u8g2, 0, 44, uartControlResult == Success ? "Success!" : "Failure!");
+      sprintf(sprintfBuffer, "TICKS: %lu", HAL_GetTick());
+      u8g2_DrawStr(&u8g2, 0, 55, sprintfBuffer);
     } while(u8g2_NextPage(&u8g2));
     osDelay(pdMS_TO_TICKS(10));
   }
@@ -728,14 +761,84 @@ void StartDisplayTask(void *argument)
 void StartSampleTask(void *argument)
 {
   /* USER CODE BEGIN StartSampleTask */
-  /* Infinite loop */
+#if SAMPLE_PROVIDER == GY955
+  uint8_t txBuffer[3] = {0xAA, 0b10101000, };
+  txBuffer[2] = txBuffer[0] + txBuffer[1];
+  HAL_UART_Transmit(&huart6, txBuffer, sizeof(txBuffer), 100); //初始化为仅欧拉角的连续测量
+  uint8_t rxBuffer[UART6_RX_BUFFER_SIZE];
+  uint8_t *rxPtrEnd = rxBuffer + UART6_RX_BUFFER_SIZE;
+  __HAL_UART_ENABLE_IT(&huart6, UART_IT_IDLE);
+  HAL_UART_Receive_DMA(&huart6, uart6RxBuffer, UART6_RX_BUFFER_SIZE);
   for(;;)
   {
+// 单次测量
+//    txBuffer[0] = 0xA5;
+//    txBuffer[1] = 0x45;
+//    txBuffer[2] = txBuffer[0] + txBuffer[1];
+//    HAL_UART_Transmit(&huart6, txBuffer, sizeof(txBuffer), 100);
+
+    if(osMessageQueueGet(sensorUartRxQueueHandle, rxBuffer, NULL, 100) == osOK) { //等待串口收到数据
+      uint8_t *rxPtr = rxBuffer;
+      for( ;; ) {
+        while(rxPtr < rxPtrEnd && *rxPtr++ != 0x5A); //Byte 0：0x5A 由于未知原因，在连续发送模式下接收到的第一位不一定是0x5A，需要忽略之前的所有数据
+        if(*rxPtr++ != 0x5A  || rxPtr + 2 >= rxPtrEnd) break; //Byte 1：0x5A
+        uint8_t type = *rxPtr++; //Byte 2：类型
+        size_t remainder = *rxPtr++; //Byte 3：除去校验位剩下的位数
+        if(rxPtr + remainder >= rxPtrEnd) break;
+        uint8_t check = 0x5A * 2 + type + remainder; // 校验位
+        for(uint8_t *checkPtr = rxPtr; checkPtr < rxPtr + remainder; checkPtr ++) check += *checkPtr;
+        if(check != rxPtr[remainder]) continue;
+        if(type & 0x01) {
+          float accX = (float)(int16_t)((rxPtr[0] << 8) | rxPtr[1]);
+          float accY = (float)(int16_t)((rxPtr[2] << 8) | rxPtr[3]);
+          float accZ = (float)(int16_t)((rxPtr[4] << 8) | rxPtr[5]);
+          rxPtr += 6;
+        }
+        if(type & 0x02) {
+          float magX = (float)(int16_t)((rxPtr[0] << 8) | rxPtr[1]) / 16.0f;
+          float magY = (float)(int16_t)((rxPtr[2] << 8) | rxPtr[3]) / 16.0f;
+          float magZ = (float)(int16_t)((rxPtr[4] << 8) | rxPtr[5]) / 16.0f;
+          rxPtr += 6;
+        }
+        if(type & 0x04) {
+          float gyrX = (float)(int16_t)((rxPtr[0] << 8) | rxPtr[1]) / 16.0f;
+          float gyrY = (float)(int16_t)((rxPtr[2] << 8) | rxPtr[3]) / 16.0f;
+          float gyrZ = (float)(int16_t)((rxPtr[4] << 8) | rxPtr[5]) / 16.0f;
+          thetaX = gyrX;
+          thetaY = gyrY;
+          rxPtr += 6;
+        }
+        if(type & 0x08) { // 欧拉角
+          float yaw = (float)(uint16_t)((rxPtr[0] << 8) | rxPtr[1]) / 100.0f;
+          float roll = (float)(int16_t)((rxPtr[2] << 8) | rxPtr[3]) / 100.0f;
+          float pitch = (float)(int16_t)((rxPtr[4] << 8) | rxPtr[5]) / 100.0f;
+          rotX = roll;
+          rotY = pitch;
+          rxPtr += 6;
+        }
+        if(type & 0x10) {
+          float q1 = (float)(int16_t)((rxPtr[0] << 8) | rxPtr[1]) / 10000.0f;
+          float q2 = (float)(int16_t)((rxPtr[2] << 8) | rxPtr[3]) / 10000.0f;
+          float q3 = (float)(int16_t)((rxPtr[4] << 8) | rxPtr[5]) / 10000.0f;
+          float q4 = (float)(int16_t)((rxPtr[6] << 8) | rxPtr[7]) / 10000.0f;
+          rxPtr += 8;
+        }
+        rxPtr ++; //跳过校验位
+      }
+      memset(rxBuffer, 0x00, sizeof(rxBuffer));
+    }
+  }
+#endif
+#if SAMPLE_PROVIDER == MPU6050
+  for( ;; ) {
     MPU6050_Read_All(&hi2c1, &mpu6050);
-    HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_12);
-    osDelay(pdMS_TO_TICKS(10));
+    thetaX = mpu6050.Gx;
+    thetaY = mpu6050.Gy;
+    rotX = mpu6050.KalmanAngleX;
+    rotY = mpu6050.KalmanAngleY;
     osDelayUntil(osKernelGetTickCount() + pdMS_TO_TICKS(10));
   }
+#endif
   /* USER CODE END StartSampleTask */
 }
 
@@ -749,14 +852,34 @@ void StartSampleTask(void *argument)
 void StartUartHandlerTask(void *argument)
 {
   /* USER CODE BEGIN StartUartHandlerTask */
+  uint8_t txBuffer[64];
   char rxBuffer[UART1_RX_BUFFER_SIZE];
+  float T, Kp, Ki, Kd, rx, ry;
   /* Infinite loop */
   for(;;)
   {
-    if(osMessageQueueGet(uartRxQueueHandle, rxBuffer, NULL, portMAX_DELAY)) {
-//      float T, Kp, Ki, Kd;
-//      sscanf(rxBuffer, "T: %f, Kp: %f, Ki: %f, Kd: %f", &T, &Kp, &Ki, &Kd);
-//      SetPIDParameters(T, Kp, Ki, Kd);
+    uint8_t *txPtr = txBuffer;
+    *txPtr++ = 0x03;
+    *txPtr++ = 0xFC;
+    *txPtr++ = (uint8_t)(thetaX / 180.0f * UINT8_MAX);
+    *txPtr++ = (uint8_t)(thetaY / 180.0f * UINT8_MAX);
+    *txPtr++ = (uint8_t)(targetThetaX / 180.0f * UINT8_MAX);
+    *txPtr++ = (uint8_t)(targetThetaY / 180.0f * UINT8_MAX);
+    *txPtr++ = 0xFC;
+    *txPtr++ = 0x03;
+
+    HAL_UART_Transmit(&huart1, txBuffer, txPtr - txBuffer, 10);
+    if(osMessageQueueGet(btUartRxQueueHandle, rxBuffer, NULL, 100) == osOK && osMutexAcquire(pidStatusMutexHandle, 100) == osOK) {
+      if(sscanf(rxBuffer, "%f,%f:%f,%f,%f,%f", &rx, &ry, &Kp, &Ki, &Kd, &T) == 6) {
+        SetPIDParameters(T, Kp, Ki, Kd);
+        targetThetaX = rx;
+        targetThetaY = ry;
+        PIDController_Init(&pidX);
+        PIDController_Init(&pidY);
+        uartControlResult = Success;
+      } else uartControlResult = Failure;
+      memset(rxBuffer, 0x00, sizeof(rxBuffer));
+      osMutexRelease(pidStatusMutexHandle);
     }
   }
   /* USER CODE END StartUartHandlerTask */

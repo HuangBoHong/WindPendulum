@@ -62,8 +62,12 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 /* USER CODE BEGIN Private defines */
 #define UART1_RX_BUFFER_SIZE 64
+#define UART6_RX_BUFFER_SIZE 64
 extern char uart1RxBuffer[UART1_RX_BUFFER_SIZE];
-extern osMessageQueueId_t uartRxQueueHandle;
+extern char uart6RxBuffer[UART6_RX_BUFFER_SIZE];
+
+extern osMessageQueueId_t btUartRxQueueHandle;
+extern osMessageQueueId_t sensorUartRxQueueHandle;
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

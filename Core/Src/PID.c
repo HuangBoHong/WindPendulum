@@ -24,13 +24,13 @@ float PIDController_Update(PIDController *pid, float setpoint, float measurement
 	/*
 	* Proportional
 	*/
-    float proportional = pid->Kp * error;
+    float proportional = error;
 
 
 	/*
 	* Integral
 	*/
-    pid->integrator = pid->integrator + 0.5f * pid->Ki * pid->T * (error + pid->prevError);
+    pid->integrator += + 0.5f * pid->T / pid->Ti * (error + pid->prevError);
 
 	/* Anti-wind-up via integrator clamping */
     if (pid->integrator > pid->limMaxInt) {
@@ -43,20 +43,19 @@ float PIDController_Update(PIDController *pid, float setpoint, float measurement
 
     }
 
-
 	/*
 	* Derivative (band-limited differentiator)
 	*/
-		
-    pid->differentiator = -(2.0f * pid->Kd * (measurement - pid->prevMeasurement)	/* Note: derivative on measurement, therefore minus sign in front of equation! */
-                        + (2.0f * pid->tau - pid->T) * pid->differentiator)
-                        / (2.0f * pid->tau + pid->T);
 
+//    pid->differentiator = -(2.0f * pid->Td * (measurement - pid->prevMeasurement)	/* Note: derivative on measurement, therefore minus sign in front of equation! */
+//                        + (2.0f * pid->tau - pid->T) * pid->differentiator)
+//                        / (2.0f * pid->tau + pid->T);
+  pid->differentiator = pid->Td / pid->T * (error - pid->prevError);
 
 	/*
 	* Compute output and apply limits
 	*/
-    pid->out = proportional + pid->integrator + pid->differentiator;
+    pid->out = pid->Kp * (proportional + pid->integrator + pid->differentiator);
 
     if (pid->out > pid->limMax) {
 

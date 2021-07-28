@@ -58,7 +58,9 @@
 
 /* External variables --------------------------------------------------------*/
 extern DMA_HandleTypeDef hdma_usart1_rx;
+extern DMA_HandleTypeDef hdma_usart6_rx;
 extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart6;
 extern TIM_HandleTypeDef htim11;
 
 /* USER CODE BEGIN EV */
@@ -206,7 +208,7 @@ void USART1_IRQHandler(void)
       uint8_t rx_len =  UART1_RX_BUFFER_SIZE - temp;
 
       HAL_UART_Receive_DMA(&huart1, uart1RxBuffer, UART1_RX_BUFFER_SIZE);
-//      osMessageQueuePut(uartRxQueueHandle, uart1RxBuffer, 0, 0);
+      osMessageQueuePut(btUartRxQueueHandle, uart1RxBuffer, 0, 0);
     }
 
   }
@@ -233,6 +235,20 @@ void EXTI15_10_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles DMA2 stream1 global interrupt.
+  */
+void DMA2_Stream1_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Stream1_IRQn 0 */
+
+  /* USER CODE END DMA2_Stream1_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart6_rx);
+  /* USER CODE BEGIN DMA2_Stream1_IRQn 1 */
+
+  /* USER CODE END DMA2_Stream1_IRQn 1 */
+}
+
+/**
   * @brief This function handles DMA2 stream2 global interrupt.
   */
 void DMA2_Stream2_IRQHandler(void)
@@ -244,6 +260,33 @@ void DMA2_Stream2_IRQHandler(void)
   /* USER CODE BEGIN DMA2_Stream2_IRQn 1 */
 
   /* USER CODE END DMA2_Stream2_IRQn 1 */
+}
+
+/**
+  * @brief This function handles USART6 global interrupt.
+  */
+void USART6_IRQHandler(void)
+{
+  /* USER CODE BEGIN USART6_IRQn 0 */
+
+  /* USER CODE END USART6_IRQn 0 */
+  HAL_UART_IRQHandler(&huart6);
+  /* USER CODE BEGIN USART6_IRQn 1 */
+  if(USART6 == huart6.Instance) {
+    if(__HAL_UART_GET_FLAG(&huart6,UART_FLAG_IDLE) != RESET) {
+      __HAL_UART_CLEAR_IDLEFLAG(&huart6);
+
+      HAL_UART_DMAStop(&huart6);
+      uint32_t temp  =  __HAL_DMA_GET_COUNTER(&hdma_usart6_rx);
+      uint8_t rx_len =  UART6_RX_BUFFER_SIZE - temp;
+
+      HAL_UART_Receive_DMA(&huart6, uart6RxBuffer, UART6_RX_BUFFER_SIZE);
+      osMessageQueuePut(sensorUartRxQueueHandle, uart6RxBuffer, 0, 0);
+    }
+
+  }
+
+  /* USER CODE END USART6_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */
